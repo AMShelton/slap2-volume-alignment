@@ -1,0 +1,18 @@
+Metadata-Version: 2.4
+Name: slap2-volume-align
+Version: 0.1.0
+Summary: Alignment and reconstruction of SLAP2 DMD volumes
+Author: Andrew Shelton
+Requires-Python: >=3.9
+License-File: LICENSE
+Requires-Dist: numpy
+Requires-Dist: scipy
+Requires-Dist: tifffile
+Requires-Dist: scikit-image
+Requires-Dist: napari
+Requires-Dist: magicgui
+Requires-Dist: pydantic
+Requires-Dist: pyyaml
+Requires-Dist: typer
+Requires-Dist: rich
+Dynamic: license-file

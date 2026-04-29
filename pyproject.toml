@@ -1,0 +1,26 @@
+[project]
+name = "slap2-volume-align"
+version = "0.1.0"
+description = "Alignment and reconstruction of SLAP2 DMD volumes"
+authors = [{name = "Andrew Shelton"}]
+requires-python = ">=3.9"
+
+dependencies = [
+    "numpy",
+    "scipy",
+    "tifffile",
+    "scikit-image",
+    "napari",
+    "magicgui",
+    "pydantic",
+    "pyyaml",
+    "typer",
+    "rich"
+]
+
+[project.scripts]
+slap2-align = "slap2_volume_align.cli:app"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
