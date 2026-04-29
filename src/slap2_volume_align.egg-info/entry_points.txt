@@ -1,2 +1,0 @@
-[console_scripts]
-slap2-align = slap2_volume_align.cli:app
