@@ -1,8 +1,23 @@
+# ---- Python / environment ----
 .venv/
+venv/
+env/
+
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+
+# ---- Packaging ----
+*.egg-info/
+*.egg
+build/
+dist/
+
+# ---- Jupyter ----
 .ipynb_checkpoints/
 
+# ---- Data (CRITICAL) ----
 data/
 *.tif
 *.tiff
@@ -11,4 +26,12 @@ data/
 *.mat
 *.zarr
 
+# ---- Outputs / artifacts ----
 outputs/
+*.png
+*.jpg
+*.pdf
+
+# ---- OS junk ----
+.DS_Store
+Thumbs.db
