@@ -1,23 +1,14 @@
-"""Bruker/ScanImage TIFF stack support."""
+"""Bruker/ScanImage TIFF stack support.
 
-from slap2_volume_align.sources.scanimage.metadata import (
-    ScanImageFrameDescription,
-    ScanImageStackSpec,
-    infer_scanimage_plane_count,
-    parse_scanimage_description,
-)
-from slap2_volume_align.sources.scanimage.pipeline import (
-    ScanImageAverageConfig,
-    average_scanimage_volume,
-)
-from slap2_volume_align.sources.scanimage.subset import save_scanimage_plane_subset
+Keep this package initializer intentionally light.
 
-__all__ = [
-    "ScanImageAverageConfig",
-    "average_scanimage_volume",
-    "ScanImageFrameDescription",
-    "ScanImageStackSpec",
-    "infer_scanimage_plane_count",
-    "parse_scanimage_description",
-    "save_scanimage_plane_subset",
-]
+Importing heavy pipeline objects here creates circular imports because the
+low-level TIFF reader needs ScanImage metadata classes, while the ScanImage
+pipeline also needs the TIFF reader. Import concrete objects directly from their
+submodules instead, e.g.:
+
+    from slap2_volume_align.sources.scanimage.pipeline import average_scanimage_volume
+    from slap2_volume_align.sources.scanimage.metadata import ScanImageStackSpec
+"""
+
+__all__: list[str] = []
