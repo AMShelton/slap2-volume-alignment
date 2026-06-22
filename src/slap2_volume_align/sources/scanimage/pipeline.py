@@ -18,11 +18,16 @@ from slap2_volume_align.readers.tiff import (
 from slap2_volume_align.sources.scanimage.metadata import ScanImageStackSpec
 from slap2_volume_align.qc.scanimage import make_volume_qc_png, write_shift_csv
 from slap2_volume_align.core.registration import (
-    apply_rigid_shift,
     estimate_rigid_shift,
     make_template,
     mean_shifted_frames,
-    nanmean_stack,
+)
+from slap2_volume_align.core.bidirectional import apply_bidirectional_phase
+from slap2_volume_align.core.straightening import (
+    apply_z_straightening,
+    estimate_z_straightening_shifts,
+    make_straightening_qc_png,
+    write_straightening_csv,
 )
 
 
@@ -48,6 +53,20 @@ class ScanImageAverageConfig:
     output_compression: str | None = "zlib"
     infer_from_descriptions: bool = True
     write_qc_png: bool = True
+    # Optional bidirectional odd/even line phase correction before registration.
+    # bidiphase=0 disables this. bidiphase=1 matches the colleague/Suite2p-style script.
+    bidiphase: int = 0
+    bidi_line_parity: str = "odd"
+    bidi_fill_mode: str = "preserve"
+    # Optional second-pass inter-plane straightening of the averaged z volume.
+    straighten_z: bool = False
+    z_anchor: int | None = None
+    z_template_radius: int = 2
+    z_registration_binning: int = 4
+    z_upsample_factor: int = 10
+    z_max_step_shift_px: float = 12.0
+    z_highpass_sigma_px: float = 16.0
+    z_smooth_window: int = 9
 
 
 def average_scanimage_volume(config: ScanImageAverageConfig) -> dict:
@@ -97,6 +116,16 @@ def average_scanimage_volume(config: ScanImageAverageConfig) -> dict:
                 channel_index=config.alignment_channel,
                 spec=spec,
             )
+            if config.bidiphase != 0:
+                alignment_frames = [
+                    apply_bidirectional_phase(
+                        frame,
+                        config.bidiphase,
+                        line_parity=config.bidi_line_parity,
+                        fill_mode=config.bidi_fill_mode,
+                    )
+                    for frame in alignment_frames
+                ]
             template = make_template(alignment_frames, method=config.template_method)
 
             shifts: list[tuple[float, float]] = []
@@ -142,6 +171,16 @@ def average_scanimage_volume(config: ScanImageAverageConfig) -> dict:
                         spec=spec,
                     )
                 )
+                if config.bidiphase != 0 and channel_index != config.alignment_channel:
+                    frames = [
+                        apply_bidirectional_phase(
+                            frame,
+                            config.bidiphase,
+                            line_parity=config.bidi_line_parity,
+                            fill_mode=config.bidi_fill_mode,
+                        )
+                        for frame in frames
+                    ]
                 volumes[channel_index][out_z] = mean_shifted_frames(
                     frames,
                     shifts,
@@ -163,6 +202,52 @@ def average_scanimage_volume(config: ScanImageAverageConfig) -> dict:
         )
         output_paths[f"channel_{channel_index + 1}"] = str(out_path)
 
+
+    straightened_output_paths: dict[str, str] = {}
+    if config.straighten_z:
+        straightening_rows = estimate_z_straightening_shifts(
+            volumes[config.alignment_channel],
+            z_indices=z_indices,
+            anchor_z=config.z_anchor,
+            template_radius=config.z_template_radius,
+            binning=config.z_registration_binning,
+            upsample_factor=config.z_upsample_factor,
+            max_step_shift_px=config.z_max_step_shift_px,
+            highpass_sigma_px=config.z_highpass_sigma_px,
+            smooth_window=config.z_smooth_window,
+            interpolation_order=config.interpolation_order,
+        )
+        straightening_csv = out_dir / f"{stem}_z_straightening_shifts.csv"
+        write_straightening_csv(straightening_csv, straightening_rows)
+
+        for channel_index, volume in sorted(volumes.items()):
+            straightened = apply_z_straightening(
+                volume,
+                straightening_rows,
+                use_smoothed=True,
+                interpolation_order=config.interpolation_order,
+            )
+            out_path = out_dir / f"{stem}_avg_ch{channel_index + 1}_straightened.tif"
+            write_volume_tiff(
+                out_path,
+                straightened,
+                dtype=config.output_dtype,
+                compression=config.output_compression,
+                description=(
+                    f"Averaged and z-straightened ScanImage volume from {input_tif.name}; "
+                    f"channel={channel_index + 1}; axes=ZYX"
+                ),
+            )
+            straightened_output_paths[f"channel_{channel_index + 1}"] = str(out_path)
+            volumes[channel_index] = straightened
+
+        if config.write_qc_png:
+            straight_qc_path = out_dir / f"{stem}_z_straightening_qc.png"
+            make_straightening_qc_png(straight_qc_path, straightening_rows)
+    else:
+        straightening_rows = []
+        straightening_csv = None
+
     shifts_path = out_dir / f"{stem}_alignment_shifts.csv"
     write_shift_csv(shifts_path, shift_rows)
 
@@ -171,17 +256,21 @@ def average_scanimage_volume(config: ScanImageAverageConfig) -> dict:
         "stack_spec": spec.to_dict(),
         "z_indices": z_indices,
         "outputs": output_paths,
+        "straightened_outputs": straightened_output_paths,
         "shifts_csv": str(shifts_path),
+        "z_straightening_csv": str(straightening_csv) if straightening_csv is not None else None,
     }
-
-    summary_path = out_dir / f"{stem}_alignment_summary.json"
-    summary_path.write_text(json.dumps(summary, indent=2))
-    summary["summary_json"] = str(summary_path)
 
     if config.write_qc_png:
         qc_path = out_dir / f"{stem}_alignment_qc.png"
         make_volume_qc_png(qc_path, volumes)
         summary["qc_png"] = str(qc_path)
+        if config.straighten_z:
+            summary["z_straightening_qc_png"] = str(out_dir / f"{stem}_z_straightening_qc.png")
+
+    summary_path = out_dir / f"{stem}_alignment_summary.json"
+    summary["summary_json"] = str(summary_path)
+    summary_path.write_text(json.dumps(summary, indent=2))
 
     return summary
 
