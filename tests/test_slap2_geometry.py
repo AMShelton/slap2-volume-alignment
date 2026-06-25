@@ -10,6 +10,7 @@ from slap2_volume_align.sources.slap2.geometry import (
 from slap2_volume_align.sources.slap2.metadata import (
     Slap2ReferencePageInfo,
     Slap2ReferenceStackSpec,
+    offset_reference_stack_z,
 )
 
 
@@ -61,3 +62,13 @@ def test_footprint_and_overlap():
     assert grid.x_size > 1
     assert grid.y_size > 1
     assert grid.z_size > 1
+
+
+def test_offset_reference_stack_z():
+    s = _spec(z0=-60.0, n=3)
+    shifted = offset_reference_stack_z(s, -7.5)
+    assert s.z_min_um == -60.0
+    assert shifted.z_min_um == -67.5
+    assert shifted.z_max_um == -64.5
+    assert shifted.pages[0].page_index == s.pages[0].page_index
+    assert np.allclose(shifted.representative_transform, s.representative_transform)

@@ -151,6 +151,7 @@ def slap2_footprints(
     out_dir: Path = typer.Argument(..., help="Output directory for footprint QC."),
     xy_resolution_um: Optional[float] = typer.Option(None, help="Output XY resolution for grid preview. Defaults to native-ish."),
     z_resolution_um: Optional[float] = typer.Option(None, help="Output Z spacing. Defaults to inferred median dz."),
+    dmd2_z_offset_um: float = typer.Option(0.0, help="Axial offset, in microns, applied to DMD2 before overlap/grid inference. Negative shifts DMD2 superficial."),
 ) -> None:
     """Plot SLAP2 DMD reference-stack footprints in sample coordinates."""
 
@@ -160,6 +161,7 @@ def slap2_footprints(
         out_dir,
         xy_resolution_um=xy_resolution_um,
         z_resolution_um=z_resolution_um,
+        dmd2_z_offset_um=dmd2_z_offset_um,
     )
     print("[green]Finished SLAP2 footprint QC[/green]")
     print(summary)
@@ -174,6 +176,7 @@ def slap2_merge_dmds(
     xy_resolution_um: Optional[float] = typer.Option(None, help="Output XY resolution in microns. Defaults to native-ish."),
     z_resolution_um: Optional[float] = typer.Option(None, help="Output Z spacing in microns. Defaults to inferred dz."),
     z_grid: str = typer.Option("first", help="'first' uses DMD1 z origin; 'union' uses union min/max."),
+    dmd2_z_offset_um: float = typer.Option(0.0, help="Axial offset, in microns, applied to DMD2 before z interpolation/blending. Negative shifts DMD2 superficial."),
     padding_um: float = typer.Option(2.0, help="Sample-space XY padding around combined footprint."),
     z_interp_method: str = typer.Option("linear", help="Z sampling: linear or nearest."),
     output_compression: Optional[str] = typer.Option(None, help="TIFF compression, e.g. zlib/lzw, or omit."),
@@ -197,6 +200,7 @@ def slap2_merge_dmds(
         xy_resolution_um=xy_resolution_um,
         z_resolution_um=z_resolution_um,
         z_grid=z_grid,
+        dmd2_z_offset_um=dmd2_z_offset_um,
         padding_um=padding_um,
         z_interp_method=z_interp_method,
         output_compression=output_compression if output_compression else None,

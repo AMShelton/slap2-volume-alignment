@@ -174,8 +174,11 @@ Run this before processing image data heavily:
 slap2-align slap2-footprints \
   "Z:/path/to/structure_volume_DMD1-REFERENCE.tif" \
   "Z:/path/to/structure_volume_DMD2-REFERENCE.tif" \
-  "Z:/path/to/super_stack_qc"
+  "Z:/path/to/super_stack_qc" \
+  --dmd2-z-offset-um -7.5
 ```
+
+Set `--dmd2-z-offset-um 0` for a metadata-only baseline. For the current 836174 dataset, overlap diagnostics estimated `-7.5 µm`, meaning DMD2 should be shifted 5 planes superficial before z interpolation, overlap inference, residual XY registration, and blending.
 
 This writes:
 
@@ -196,14 +199,18 @@ slap2-align slap2-merge-dmds \
   "Z:/path/to/super_stack" \
   --xy-resolution-um 0.25 \
   --z-resolution-um 1.5 \
+  --dmd2-z-offset-um -7.5 \
   --fine-register-overlap
 ```
 
 Outputs include:
 
 ```text
-*_super_stack_ch1.tif              # Fiji/ImageJ-compatible merged ZYX volume
-*_warped_ch1.tif                   # optional DMD-specific warped volumes
+slap2_super_stack_ch1.tif          # Fiji/ImageJ-compatible merged ZYX volume
+dmd1_warped_ch1.tif                # optional DMD1 warped volume
+dmd2_warped_ch1.tif                # optional DMD2 warped volume
+dmd1_weights_ch1.tif               # optional DMD1 merge weights
+dmd2_weights_ch1.tif               # optional DMD2 merge weights
 merge_weights.tif                  # accumulated merge weights/valid support
 slap2_super_stack_merge_summary.json
 slap2_dmd_footprints_qc.png

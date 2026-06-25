@@ -21,6 +21,7 @@ from slap2_volume_align.sources.slap2.geometry import (
 )
 from slap2_volume_align.sources.slap2.metadata import (
     Slap2ReferenceStackSpec,
+    offset_reference_stack_z,
     read_reference_stack_spec,
 )
 from slap2_volume_align.sources.slap2.qc import plot_dmd_footprints, save_merge_qc_png
@@ -38,6 +39,7 @@ class Slap2MergeConfig:
     xy_resolution_um: Optional[float] = None
     z_resolution_um: Optional[float] = None
     z_grid: str = "first"
+    dmd2_z_offset_um: float = 0.0
     padding_um: float = 2.0
     z_interp_method: str = "linear"
     output_dtype: str = "float32"
@@ -200,7 +202,9 @@ def _max_projection_for_registration(vol: np.ndarray) -> np.ndarray:
     if not valid.any():
         return np.zeros(vol.shape[1:], dtype=np.float32)
     tmp = np.where(valid, vol, np.nan)
-    return np.nanmax(tmp, axis=0).astype(np.float32)
+    with np.errstate(all="ignore"):
+        proj = np.nanmax(tmp, axis=0)
+    return np.nan_to_num(proj, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
 
 
 def estimate_overlap_residual_shift_px(
@@ -295,6 +299,7 @@ def make_slap2_footprint_summary(
     *,
     xy_resolution_um: Optional[float] = None,
     z_resolution_um: Optional[float] = None,
+    dmd2_z_offset_um: float = 0.0,
 ) -> dict:
     """Parse metadata, compute common grid, and write a footprint QC PNG."""
 
@@ -302,7 +307,8 @@ def make_slap2_footprint_summary(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     spec1 = read_reference_stack_spec(dmd1_tif)
-    spec2 = read_reference_stack_spec(dmd2_tif)
+    spec2_raw = read_reference_stack_spec(dmd2_tif)
+    spec2 = offset_reference_stack_z(spec2_raw, dmd2_z_offset_um)
     grid = compute_output_grid(
         [spec1, spec2],
         xy_resolution_um=xy_resolution_um,
@@ -311,14 +317,19 @@ def make_slap2_footprint_summary(
     )
     plot_dmd_footprints(
         [spec1, spec2],
-        labels=["DMD1", "DMD2"],
+        labels=["DMD1", "DMD2 effective"],
         grid=grid,
         out_path=out_dir / "slap2_dmd_footprints_qc.png",
     )
 
     summary = {
         "dmd1": spec1.to_dict(),
-        "dmd2": spec2.to_dict(),
+        "dmd2": spec2_raw.to_dict(),
+        "dmd2_effective": spec2.to_dict(),
+        "z_registration": {
+            "dmd2_z_offset_um": float(dmd2_z_offset_um),
+            "dmd2_z_offset_planes": float(dmd2_z_offset_um) / float(grid.z_resolution_um),
+        },
         "z_overlap_um": list(infer_z_overlap_um(spec1, spec2)),
         "output_grid": grid.to_dict(),
         "footprint_qc_png": str(out_dir / "slap2_dmd_footprints_qc.png"),
@@ -345,14 +356,28 @@ def merge_dmd_reference_stack_specs(
     dmd1_tif = Path(config.dmd1_tif)
     dmd2_tif = Path(config.dmd2_tif)
 
+    spec2_raw = spec2
+    spec2_effective = offset_reference_stack_z(spec2_raw, config.dmd2_z_offset_um)
+
     grid = compute_output_grid(
-        [spec1, spec2],
+        [spec1, spec2_effective],
         xy_resolution_um=config.xy_resolution_um,
         z_resolution_um=config.z_resolution_um,
         padding_um=config.padding_um,
         z_grid=config.z_grid,
     )
-    overlap = infer_z_overlap_um(spec1, spec2)
+    overlap = infer_z_overlap_um(spec1, spec2_effective)
+    z_registration = {
+        "dmd2_z_offset_um": float(config.dmd2_z_offset_um),
+        "dmd2_z_offset_planes": float(config.dmd2_z_offset_um) / float(grid.z_resolution_um),
+        "source": "manual_config" if abs(float(config.dmd2_z_offset_um)) > 1e-12 else "none",
+        "dmd2_raw_z_range_um": [float(spec2_raw.z_min_um), float(spec2_raw.z_max_um)],
+        "dmd2_effective_z_range_um": [
+            float(spec2_effective.z_min_um),
+            float(spec2_effective.z_max_um),
+        ],
+        "effective_z_overlap_um": [float(overlap[0]), float(overlap[1])],
+    }
 
     # Warp separately so we can inspect and optionally residual-align before blending.
     dmd1_sum, dmd1_w = warp_reference_stack_to_grid(
@@ -368,7 +393,7 @@ def merge_dmd_reference_stack_specs(
     )
     dmd2_sum, dmd2_w = warp_reference_stack_to_grid(
         dmd2_tif,
-        spec2,
+        spec2_effective,
         grid,
         channel=config.channel,
         z_interp_method=config.z_interp_method,
@@ -410,19 +435,30 @@ def merge_dmd_reference_stack_specs(
     dmd1_tif_out = None
     dmd2_tif_out = None
     weights_tif_out = None
+    dmd1_weights_tif_out = None
+    dmd2_weights_tif_out = None
     if config.write_intermediates:
         dmd1_tif_out = out_dir / f"dmd1_warped_ch{config.channel}.tif"
         dmd2_tif_out = out_dir / f"dmd2_warped_ch{config.channel}.tif"
+        dmd1_weights_tif_out = out_dir / f"dmd1_weights_ch{config.channel}.tif"
+        dmd2_weights_tif_out = out_dir / f"dmd2_weights_ch{config.channel}.tif"
         weights_tif_out = out_dir / "merge_weights.tif"
         write_imagej_tiff(dmd1_tif_out, np.nan_to_num(normalize_sum_weight(dmd1_sum, dmd1_w), nan=0.0), compression=config.output_compression)
         write_imagej_tiff(dmd2_tif_out, np.nan_to_num(normalize_sum_weight(dmd2_sum, dmd2_w), nan=0.0), compression=config.output_compression)
+        write_imagej_tiff(dmd1_weights_tif_out, dmd1_w.astype(np.float32), compression=config.output_compression)
+        write_imagej_tiff(dmd2_weights_tif_out, dmd2_w.astype(np.float32), compression=config.output_compression)
         write_imagej_tiff(weights_tif_out, merged_w.astype(np.float32), compression=config.output_compression)
 
     qc_png = None
     footprint_png = None
     if config.write_qc_png:
         footprint_png = out_dir / "slap2_dmd_footprints_qc.png"
-        plot_dmd_footprints([spec1, spec2], labels=["DMD1", "DMD2"], grid=grid, out_path=footprint_png)
+        plot_dmd_footprints(
+            [spec1, spec2_effective],
+            labels=["DMD1", "DMD2 effective"],
+            grid=grid,
+            out_path=footprint_png,
+        )
         qc_png = out_dir / "slap2_super_stack_merge_qc.png"
         save_merge_qc_png(
             dmd1_projection=_max_projection_for_registration(normalize_sum_weight(dmd1_sum, dmd1_w)),
@@ -439,14 +475,18 @@ def merge_dmd_reference_stack_specs(
             "dmd2_tif": str(dmd2_tif),
         },
         "dmd1": spec1.to_dict(),
-        "dmd2": spec2.to_dict(),
+        "dmd2": spec2_raw.to_dict(),
+        "dmd2_effective": spec2_effective.to_dict(),
         "output_grid": grid.to_dict(),
         "z_overlap_um": list(overlap),
+        "z_registration": z_registration,
         "residual_registration": residual,
         "outputs": {
             "super_stack": str(out_tif),
             "dmd1_warped": str(dmd1_tif_out) if dmd1_tif_out else None,
             "dmd2_warped": str(dmd2_tif_out) if dmd2_tif_out else None,
+            "dmd1_weights": str(dmd1_weights_tif_out) if dmd1_weights_tif_out else None,
+            "dmd2_weights": str(dmd2_weights_tif_out) if dmd2_weights_tif_out else None,
             "weights": str(weights_tif_out) if weights_tif_out else None,
             "footprint_qc_png": str(footprint_png) if footprint_png else None,
             "merge_qc_png": str(qc_png) if qc_png else None,

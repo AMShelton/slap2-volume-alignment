@@ -17,7 +17,7 @@ by supplying the z start/spacing and transform explicitly.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Optional
 
@@ -121,6 +121,29 @@ class Slap2ReferenceStackSpec:
         out["z_spacing_um"] = self.z_spacing_um if self.pages else None
         return out
 
+
+
+def offset_reference_stack_z(
+    spec: Slap2ReferenceStackSpec,
+    offset_um: float,
+    *,
+    path: Optional[str | Path] = None,
+) -> Slap2ReferenceStackSpec:
+    """Return a copy of ``spec`` with every page z position shifted by ``offset_um``.
+
+    This is used for DMD-to-DMD axial stitch calibration. The original TIFF
+    metadata is not modified; only the in-memory z coordinates used for grid
+    inference, z interpolation, overlap inference, and blending are shifted.
+    The XY transform is intentionally preserved because the z-offset corrects
+    axial placement only.
+    """
+
+    offset_um = float(offset_um)
+    if abs(offset_um) < 1e-12 and path is None:
+        return spec
+
+    shifted_pages = tuple(replace(p, z_um=float(p.z_um + offset_um)) for p in spec.pages)
+    return replace(spec, path=str(path) if path is not None else spec.path, pages=shifted_pages)
 
 def _parse_json_description(description: str) -> dict[str, Any]:
     desc = (description or "").strip()
