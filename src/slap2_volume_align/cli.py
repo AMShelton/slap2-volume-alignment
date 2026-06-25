@@ -10,6 +10,11 @@ from rich import print
 
 from .sources.scanimage.pipeline import ScanImageAverageConfig, average_scanimage_volume
 from .sources.scanimage.subset import save_scanimage_plane_subset
+from .sources.slap2.merge import (
+    Slap2MergeConfig,
+    make_slap2_footprint_summary,
+    merge_dmd_reference_stacks,
+)
 
 app = typer.Typer(help="SLAP2/ScanImage structural volume alignment utilities.")
 
@@ -54,6 +59,17 @@ def scanimage_average(
     output_compression: Optional[str] = typer.Option(
         "zlib", help="Lossless TIFF compression, e.g. zlib, lzw, or omit with ''."
     ),
+    bidiphase: int = typer.Option(0, help="Optional bidirectional odd/even line correction. 0 disables."),
+    bidi_line_parity: str = typer.Option("odd", help="Rows to shift for bidi correction: odd or even."),
+    bidi_fill_mode: str = typer.Option("preserve", help="Bidi fill mode."),
+    straighten_z: bool = typer.Option(False, help="Run second-pass z-stack straightening after averaging."),
+    z_anchor: Optional[int] = typer.Option(None, help="Anchor z-plane for straightening. Omit to auto-pick."),
+    z_template_radius: int = typer.Option(2, help="Local template radius for z straightening."),
+    z_registration_binning: int = typer.Option(4, help="Binning for z-straightening registration."),
+    z_upsample_factor: int = typer.Option(10, help="Upsample factor for z-straightening registration."),
+    z_max_step_shift_px: float = typer.Option(12.0, help="Max inter-plane shift for z straightening."),
+    z_highpass_sigma_px: float = typer.Option(16.0, help="High-pass sigma for z straightening."),
+    z_smooth_window: int = typer.Option(9, help="Smoothing window over z-straightening shifts."),
 ) -> None:
     """Motion-correct repeats at each z-plane and average a ScanImage volume."""
 
@@ -75,6 +91,17 @@ def scanimage_average(
         highpass_sigma_px=highpass_sigma_px,
         output_dtype=output_dtype,
         output_compression=compression,
+        bidiphase=bidiphase,
+        bidi_line_parity=bidi_line_parity,
+        bidi_fill_mode=bidi_fill_mode,
+        straighten_z=straighten_z,
+        z_anchor=z_anchor,
+        z_template_radius=z_template_radius,
+        z_registration_binning=z_registration_binning,
+        z_upsample_factor=z_upsample_factor,
+        z_max_step_shift_px=z_max_step_shift_px,
+        z_highpass_sigma_px=z_highpass_sigma_px,
+        z_smooth_window=z_smooth_window,
     )
     summary = average_scanimage_volume(config)
     print("[green]Finished ScanImage averaging[/green]")
@@ -114,6 +141,77 @@ def scanimage_subset(
         dry_run=dry_run,
     )
     print("[green]Finished ScanImage subset extraction[/green]")
+    print(summary)
+
+
+@app.command("slap2-footprints")
+def slap2_footprints(
+    dmd1_tif: Path = typer.Argument(..., exists=True, help="DMD1 SLAP2 *-REFERENCE.tif."),
+    dmd2_tif: Path = typer.Argument(..., exists=True, help="DMD2 SLAP2 *-REFERENCE.tif."),
+    out_dir: Path = typer.Argument(..., help="Output directory for footprint QC."),
+    xy_resolution_um: Optional[float] = typer.Option(None, help="Output XY resolution for grid preview. Defaults to native-ish."),
+    z_resolution_um: Optional[float] = typer.Option(None, help="Output Z spacing. Defaults to inferred median dz."),
+) -> None:
+    """Plot SLAP2 DMD reference-stack footprints in sample coordinates."""
+
+    summary = make_slap2_footprint_summary(
+        dmd1_tif,
+        dmd2_tif,
+        out_dir,
+        xy_resolution_um=xy_resolution_um,
+        z_resolution_um=z_resolution_um,
+    )
+    print("[green]Finished SLAP2 footprint QC[/green]")
+    print(summary)
+
+
+@app.command("slap2-merge-dmds")
+def slap2_merge_dmds(
+    dmd1_tif: Path = typer.Argument(..., exists=True, help="DMD1 SLAP2 *-REFERENCE.tif."),
+    dmd2_tif: Path = typer.Argument(..., exists=True, help="DMD2 SLAP2 *-REFERENCE.tif."),
+    out_dir: Path = typer.Argument(..., help="Output directory for merged super stack."),
+    channel: int = typer.Option(1, help="1-based channel to merge."),
+    xy_resolution_um: Optional[float] = typer.Option(None, help="Output XY resolution in microns. Defaults to native-ish."),
+    z_resolution_um: Optional[float] = typer.Option(None, help="Output Z spacing in microns. Defaults to inferred dz."),
+    z_grid: str = typer.Option("first", help="'first' uses DMD1 z origin; 'union' uses union min/max."),
+    padding_um: float = typer.Option(2.0, help="Sample-space XY padding around combined footprint."),
+    z_interp_method: str = typer.Option("linear", help="Z sampling: linear or nearest."),
+    output_compression: Optional[str] = typer.Option(None, help="TIFF compression, e.g. zlib/lzw, or omit."),
+    fine_register_overlap: bool = typer.Option(False, help="Estimate residual XY shift in overlap and apply to DMD2."),
+    residual_upsample_factor: int = typer.Option(10, help="Overlap residual registration upsample factor."),
+    residual_registration_binning: int = typer.Option(2, help="Binning for residual overlap registration."),
+    residual_highpass_sigma_px: float = typer.Option(8.0, help="High-pass sigma for residual overlap registration."),
+    residual_max_shift_px: float = typer.Option(50.0, help="Reject residual shifts larger than this."),
+    xy_feather_px: float = typer.Option(32.0, help="XY feather width in output pixels."),
+    no_z_feather: bool = typer.Option(False, help="Disable axial feathering in the DMD overlap."),
+    no_intermediates: bool = typer.Option(False, help="Do not write DMD1/DMD2 warped intermediate TIFFs."),
+    no_qc_png: bool = typer.Option(False, help="Do not write QC PNGs."),
+) -> None:
+    """Merge two SLAP2 GUI DMD reference stacks into one Fiji-compatible super stack."""
+
+    config = Slap2MergeConfig(
+        dmd1_tif=dmd1_tif,
+        dmd2_tif=dmd2_tif,
+        out_dir=out_dir,
+        channel=channel,
+        xy_resolution_um=xy_resolution_um,
+        z_resolution_um=z_resolution_um,
+        z_grid=z_grid,
+        padding_um=padding_um,
+        z_interp_method=z_interp_method,
+        output_compression=output_compression if output_compression else None,
+        fine_register_overlap=fine_register_overlap,
+        residual_upsample_factor=residual_upsample_factor,
+        residual_registration_binning=residual_registration_binning,
+        residual_highpass_sigma_px=residual_highpass_sigma_px,
+        residual_max_shift_px=residual_max_shift_px,
+        xy_feather_px=xy_feather_px,
+        z_feather=not no_z_feather,
+        write_intermediates=not no_intermediates,
+        write_qc_png=not no_qc_png,
+    )
+    summary = merge_dmd_reference_stacks(config)
+    print("[green]Finished SLAP2 DMD super-stack merge[/green]")
     print(summary)
 
 

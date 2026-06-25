@@ -153,3 +153,74 @@ Raw subsets preserve the original TIFF dtype. Averaged/motion-corrected output i
 `float32` by default because subpixel interpolation and averaging create non-integer
 values. Use `--output-dtype int16` only for display/export copies after confirming
 that clipping/quantization are acceptable.
+
+## SLAP2 GUI DMD super-stack merging
+
+The repo now includes a first-pass pipeline for merging GUI-generated SLAP2
+`*-REFERENCE.tif` stacks from DMD1 and DMD2 into one sample-coordinate super
+stack. The code expects original SLAP2 reference TIFFs with JSON page
+metadata containing `z`, `channel`, `acquisitionPathIdx`, and
+`dmdPixel2SampleTransform`.
+
+For Fiji/ImageJ-created substacks, the original SLAP2 JSON descriptions may be
+lost. Use the notebook workflow to reconstruct minimal metadata manually for
+these overlap-subset tests.
+
+### Footprint QC
+
+Run this before processing image data heavily:
+
+```bash
+slap2-align slap2-footprints \
+  "Z:/path/to/structure_volume_DMD1-REFERENCE.tif" \
+  "Z:/path/to/structure_volume_DMD2-REFERENCE.tif" \
+  "Z:/path/to/super_stack_qc"
+```
+
+This writes:
+
+```text
+slap2_dmd_footprints_qc.png
+slap2_dmd_footprints_summary.json
+```
+
+The plot should show DMD1/DMD2 footprints in common SLAP2/sample coordinates,
+including the rotated DMD2 footprint and the inferred axial overlap.
+
+### Merge DMD reference stacks
+
+```bash
+slap2-align slap2-merge-dmds \
+  "Z:/path/to/structure_volume_DMD1-REFERENCE.tif" \
+  "Z:/path/to/structure_volume_DMD2-REFERENCE.tif" \
+  "Z:/path/to/super_stack" \
+  --xy-resolution-um 0.25 \
+  --z-resolution-um 1.5 \
+  --fine-register-overlap
+```
+
+Outputs include:
+
+```text
+*_super_stack_ch1.tif              # Fiji/ImageJ-compatible merged ZYX volume
+*_warped_ch1.tif                   # optional DMD-specific warped volumes
+merge_weights.tif                  # accumulated merge weights/valid support
+slap2_super_stack_merge_summary.json
+slap2_dmd_footprints_qc.png
+slap2_super_stack_merge_qc.png
+```
+
+Start with `--xy-resolution-um 1.0` or `0.5` for fast smoke tests, then use
+native-ish `0.25` µm once geometry and overlap QC look correct.
+
+### Notebook
+
+Use:
+
+```text
+notebooks/slap2/SLAP2_SuperStack_Merge_QC.ipynb
+```
+
+for interactive testing, especially with metadata-stripped Fiji overlap
+substacks. The notebook includes manual metadata reconstruction for the current
+DMD1 last-plane / DMD2 first-plane overlap test.
