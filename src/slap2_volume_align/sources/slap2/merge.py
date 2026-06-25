@@ -401,15 +401,18 @@ def merge_dmd_reference_stack_specs(
     # Fiji displays NaNs poorly; write zeros outside the valid footprint, but preserve weights sidecar.
     merged_for_tiff = np.nan_to_num(merged, nan=0.0).astype(config.output_dtype)
 
-    out_tif = out_dir / f"{dmd1_tif.stem}_plus_{dmd2_tif.stem}_super_stack_ch{config.channel}.tif"
+    # Keep filenames intentionally short. On Windows/UNC network paths, long
+    # filenames can exceed MAX_PATH and surface as FileNotFoundError even when
+    # the directory exists. Preserve the source TIFF names in the summary JSON.
+    out_tif = out_dir / f"slap2_super_stack_ch{config.channel}.tif"
     write_imagej_tiff(out_tif, merged_for_tiff, compression=config.output_compression)
 
     dmd1_tif_out = None
     dmd2_tif_out = None
     weights_tif_out = None
     if config.write_intermediates:
-        dmd1_tif_out = out_dir / f"{dmd1_tif.stem}_warped_ch{config.channel}.tif"
-        dmd2_tif_out = out_dir / f"{dmd2_tif.stem}_warped_ch{config.channel}.tif"
+        dmd1_tif_out = out_dir / f"dmd1_warped_ch{config.channel}.tif"
+        dmd2_tif_out = out_dir / f"dmd2_warped_ch{config.channel}.tif"
         weights_tif_out = out_dir / "merge_weights.tif"
         write_imagej_tiff(dmd1_tif_out, np.nan_to_num(normalize_sum_weight(dmd1_sum, dmd1_w), nan=0.0), compression=config.output_compression)
         write_imagej_tiff(dmd2_tif_out, np.nan_to_num(normalize_sum_weight(dmd2_sum, dmd2_w), nan=0.0), compression=config.output_compression)
@@ -431,6 +434,10 @@ def merge_dmd_reference_stack_specs(
 
     summary = {
         "config": asdict(config),
+        "source_files": {
+            "dmd1_tif": str(dmd1_tif),
+            "dmd2_tif": str(dmd2_tif),
+        },
         "dmd1": spec1.to_dict(),
         "dmd2": spec2.to_dict(),
         "output_grid": grid.to_dict(),
