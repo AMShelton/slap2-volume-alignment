@@ -54,10 +54,12 @@ class ScanImageAverageConfig:
     infer_from_descriptions: bool = True
     write_qc_png: bool = True
     # Optional bidirectional odd/even line phase correction before registration.
-    # bidiphase=0 disables this. bidiphase=1 matches the colleague/Suite2p-style script.
-    bidiphase: int = 0
+    # bidiphase=0 disables this. Fractional phases are supported and often useful.
+    bidiphase: float = 0.0
     bidi_line_parity: str = "odd"
-    bidi_fill_mode: str = "preserve"
+    bidi_fill_mode: str = "nearest"
+    # Optional repeated rigid-registration/template-refinement passes.
+    registration_n_passes: int = 2
     # Optional second-pass inter-plane straightening of the averaged z volume.
     straighten_z: bool = False
     z_anchor: int | None = None
@@ -116,7 +118,7 @@ def average_scanimage_volume(config: ScanImageAverageConfig) -> dict:
                 channel_index=config.alignment_channel,
                 spec=spec,
             )
-            if config.bidiphase != 0:
+            if float(config.bidiphase) != 0.0:
                 alignment_frames = [
                     apply_bidirectional_phase(
                         frame,
@@ -128,23 +130,36 @@ def average_scanimage_volume(config: ScanImageAverageConfig) -> dict:
                 ]
             template = make_template(alignment_frames, method=config.template_method)
 
-            shifts: list[tuple[float, float]] = []
-            for repeat_index, frame in enumerate(alignment_frames):
-                if config.align:
-                    result = estimate_rigid_shift(
-                        template,
-                        frame,
-                        upsample_factor=config.upsample_factor,
-                        max_shift_px=config.max_shift_px,
-                        binning=config.registration_binning,
-                        highpass_sigma_px=config.highpass_sigma_px,
-                    )
-                    shift_yx = result.shift_yx if result.accepted else (0.0, 0.0)
-                else:
-                    result = None
-                    shift_yx = (0.0, 0.0)
+            shifts: list[tuple[float, float]] = [(0.0, 0.0)] * len(alignment_frames)
+            results = [None] * len(alignment_frames)
+            if config.align:
+                n_passes = max(1, int(config.registration_n_passes))
+                for pass_index in range(n_passes):
+                    pass_shifts: list[tuple[float, float]] = []
+                    pass_results = []
+                    for frame in alignment_frames:
+                        result = estimate_rigid_shift(
+                            template,
+                            frame,
+                            upsample_factor=config.upsample_factor,
+                            max_shift_px=config.max_shift_px,
+                            binning=config.registration_binning,
+                            highpass_sigma_px=config.highpass_sigma_px,
+                        )
+                        pass_results.append(result)
+                        pass_shifts.append(result.shift_yx if result.accepted else (0.0, 0.0))
 
-                shifts.append(shift_yx)
+                    shifts = pass_shifts
+                    results = pass_results
+                    if pass_index < n_passes - 1:
+                        template = mean_shifted_frames(
+                            alignment_frames,
+                            shifts,
+                            order=config.interpolation_order,
+                        )
+
+            for repeat_index, shift_yx in enumerate(shifts):
+                result = results[repeat_index]
                 shift_rows.append(
                     {
                         "z_index": z_index,
@@ -171,7 +186,7 @@ def average_scanimage_volume(config: ScanImageAverageConfig) -> dict:
                         spec=spec,
                     )
                 )
-                if config.bidiphase != 0 and channel_index != config.alignment_channel:
+                if float(config.bidiphase) != 0.0 and channel_index != config.alignment_channel:
                     frames = [
                         apply_bidirectional_phase(
                             frame,
