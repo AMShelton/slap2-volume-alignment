@@ -28,6 +28,14 @@ def _selected_rows(line_parity: LineParity) -> slice:
     raise ValueError(f"line_parity must be 'odd' or 'even', got {line_parity!r}")
 
 
+def _selected_rows(line_parity: LineParity) -> slice:
+    if line_parity == "odd":
+        return slice(1, None, 2)
+    if line_parity == "even":
+        return slice(0, None, 2)
+    raise ValueError(f"line_parity must be 'odd' or 'even', got {line_parity!r}")
+
+
 def apply_bidirectional_phase_2d(
     image: np.ndarray,
     bidiphase: float,
@@ -36,7 +44,10 @@ def apply_bidirectional_phase_2d(
     fill_mode: FillMode = "nearest",
     copy: bool = True,
     interpolation_order: int = 1,
+<<<<<<< HEAD
     shift_mode: ShiftMode = "selected",
+=======
+>>>>>>> 452465a780b8d014f66bf276ff5efb2d9fa32e92
 ) -> np.ndarray:
     """Shift alternating scan lines along x by an integer or fractional phase.
 
@@ -61,6 +72,7 @@ def apply_bidirectional_phase_2d(
     interpolation_order:
         Spline interpolation order for fractional shifts. ``1`` is a good
         default; ``0`` is nearest-neighbor; ``3`` is slower and smoother.
+<<<<<<< HEAD
     shift_mode:
         ``"selected"`` shifts only ``line_parity`` rows by ``bidiphase``.
         ``"symmetric"`` shifts selected rows by ``bidiphase / 2`` and the
@@ -68,6 +80,8 @@ def apply_bidirectional_phase_2d(
         same relative odd/even correction while applying comparable
         interpolation to both line parities; it is often cleaner for high-res
         structural volumes with visible cell-edge sawtoothing.
+=======
+>>>>>>> 452465a780b8d014f66bf276ff5efb2d9fa32e92
 
     Returns
     -------
@@ -83,6 +97,7 @@ def apply_bidirectional_phase_2d(
     if phase == 0:
         return out
 
+<<<<<<< HEAD
     if shift_mode not in ("selected", "symmetric"):
         raise ValueError(f"shift_mode must be 'selected' or 'symmetric', got {shift_mode!r}")
     if fill_mode not in ("preserve", "nearest", "zero"):
@@ -90,6 +105,9 @@ def apply_bidirectional_phase_2d(
 
     selected_rows = _selected_rows(line_parity)
     opposite_rows = _selected_rows("even" if line_parity == "odd" else "odd")
+=======
+    rows = _selected_rows(line_parity)
+>>>>>>> 452465a780b8d014f66bf276ff5efb2d9fa32e92
     width = out.shape[1]
     max_abs_phase = abs(phase) if shift_mode == "selected" else abs(phase) / 2.0
     if max_abs_phase >= width:
@@ -97,6 +115,7 @@ def apply_bidirectional_phase_2d(
 
     original = image if copy else out.copy()
 
+<<<<<<< HEAD
     def _shift_row_subset(row_slice: slice, row_phase: float) -> None:
         if row_phase == 0:
             out[row_slice] = original[row_slice]
@@ -160,6 +179,68 @@ def apply_bidirectional_phase_2d(
     else:
         _shift_row_subset(selected_rows, phase / 2.0)
         _shift_row_subset(opposite_rows, -phase / 2.0)
+=======
+    # Keep the exact integer implementation for speed and backward compatibility.
+    is_integer = float(phase).is_integer()
+    if is_integer:
+        p = int(phase)
+        if p > 0:
+            out[rows, p:] = original[rows, :-p]
+            if fill_mode == "nearest":
+                out[rows, :p] = original[rows, :1]
+            elif fill_mode == "zero":
+                out[rows, :p] = 0
+            elif fill_mode == "preserve":
+                pass
+            else:
+                raise ValueError(f"Unknown fill_mode: {fill_mode}")
+        else:
+            p = -p
+            out[rows, :-p] = original[rows, p:]
+            if fill_mode == "nearest":
+                out[rows, -p:] = original[rows, -1:]
+            elif fill_mode == "zero":
+                out[rows, -p:] = 0
+            elif fill_mode == "preserve":
+                pass
+            else:
+                raise ValueError(f"Unknown fill_mode: {fill_mode}")
+        return out
+
+    # Fractional row shifts.  Use nearest-edge extension during interpolation,
+    # then optionally overwrite the exposed edge columns to match fill_mode.
+    selected = original[rows].astype(np.float32, copy=False)
+    shifted = ndimage.shift(
+        selected,
+        shift=(0.0, phase),
+        order=interpolation_order,
+        mode="nearest",
+        prefilter=(interpolation_order > 1),
+    )
+    if np.issubdtype(out.dtype, np.integer):
+        info = np.iinfo(out.dtype)
+        shifted = np.clip(np.rint(shifted), info.min, info.max).astype(out.dtype)
+    else:
+        shifted = shifted.astype(out.dtype, copy=False)
+    out[rows] = shifted
+
+    edge = int(np.ceil(abs_phase))
+    if edge > 0:
+        if fill_mode == "preserve":
+            if phase > 0:
+                out[rows, :edge] = original[rows, :edge]
+            else:
+                out[rows, -edge:] = original[rows, -edge:]
+        elif fill_mode == "zero":
+            if phase > 0:
+                out[rows, :edge] = 0
+            else:
+                out[rows, -edge:] = 0
+        elif fill_mode == "nearest":
+            pass
+        else:
+            raise ValueError(f"Unknown fill_mode: {fill_mode}")
+>>>>>>> 452465a780b8d014f66bf276ff5efb2d9fa32e92
 
     return out
 
@@ -172,7 +253,10 @@ def apply_bidirectional_phase(
     fill_mode: FillMode = "nearest",
     copy: bool = True,
     interpolation_order: int = 1,
+<<<<<<< HEAD
     shift_mode: ShiftMode = "selected",
+=======
+>>>>>>> 452465a780b8d014f66bf276ff5efb2d9fa32e92
 ) -> np.ndarray:
     """Apply bidirectional line-phase correction to 2-D or stack-like arrays.
 
@@ -196,7 +280,10 @@ def apply_bidirectional_phase(
             fill_mode=fill_mode,
             copy=False,
             interpolation_order=interpolation_order,
+<<<<<<< HEAD
             shift_mode=shift_mode,
+=======
+>>>>>>> 452465a780b8d014f66bf276ff5efb2d9fa32e92
         )
 
     flat = out.reshape((-1, *out.shape[-2:]))
@@ -208,7 +295,10 @@ def apply_bidirectional_phase(
             fill_mode=fill_mode,
             copy=False,
             interpolation_order=interpolation_order,
+<<<<<<< HEAD
             shift_mode=shift_mode,
+=======
+>>>>>>> 452465a780b8d014f66bf276ff5efb2d9fa32e92
         )
     return out
 
@@ -258,7 +348,10 @@ def bidirectional_phase_score_2d(
     line_parity: LineParity = "odd",
     fill_mode: FillMode = "nearest",
     edge_margin_px: int = 16,
+<<<<<<< HEAD
     shift_mode: ShiftMode = "selected",
+=======
+>>>>>>> 452465a780b8d014f66bf276ff5efb2d9fa32e92
 ) -> float:
     """Return a lower-is-better odd/even neighbor mismatch score.
 
@@ -274,7 +367,10 @@ def bidirectional_phase_score_2d(
         fill_mode=fill_mode,
         copy=True,
         interpolation_order=1,
+<<<<<<< HEAD
         shift_mode=shift_mode,
+=======
+>>>>>>> 452465a780b8d014f66bf276ff5efb2d9fa32e92
     )
 
     if line_parity == "odd":
@@ -316,7 +412,10 @@ def estimate_bidirectional_phase_2d(
     crop_yx: tuple[int, int] = (96, 96),
     x_stride: int = 1,
     highpass_sigma_px: float = 8.0,
+<<<<<<< HEAD
     shift_mode: ShiftMode = "selected",
+=======
+>>>>>>> 452465a780b8d014f66bf276ff5efb2d9fa32e92
 ) -> dict:
     """Estimate the best alternating-line phase for one image.
 
@@ -346,7 +445,10 @@ def estimate_bidirectional_phase_2d(
                 phase_full / max(x_stride, 1),
                 line_parity=parity,
                 fill_mode="nearest",
+<<<<<<< HEAD
                 shift_mode=shift_mode,
+=======
+>>>>>>> 452465a780b8d014f66bf276ff5efb2d9fa32e92
             )
             rows.append(
                 {
@@ -386,7 +488,10 @@ def estimate_bidirectional_phase_stack(
     crop_yx: tuple[int, int] = (96, 96),
     x_stride: int = 1,
     highpass_sigma_px: float = 8.0,
+<<<<<<< HEAD
     shift_mode: ShiftMode = "selected",
+=======
+>>>>>>> 452465a780b8d014f66bf276ff5efb2d9fa32e92
 ) -> dict:
     """Estimate bidirectional phase from several raw frames.
 
@@ -411,7 +516,10 @@ def estimate_bidirectional_phase_stack(
             crop_yx=crop_yx,
             x_stride=x_stride,
             highpass_sigma_px=highpass_sigma_px,
+<<<<<<< HEAD
             shift_mode=shift_mode,
+=======
+>>>>>>> 452465a780b8d014f66bf276ff5efb2d9fa32e92
         )
         for row in estimate["scores"]:
             per_frame_scores.append({"frame_index": frame_index, **row})

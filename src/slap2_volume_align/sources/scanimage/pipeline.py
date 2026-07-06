@@ -58,9 +58,12 @@ class ScanImageAverageConfig:
     bidiphase: float = 0.0
     bidi_line_parity: str = "odd"
     bidi_fill_mode: str = "nearest"
+<<<<<<< HEAD
     # ``selected`` shifts one row parity only; ``symmetric`` shifts both parities
     # by half the requested relative phase and usually reduces sawtooth texture.
     bidi_shift_mode: str = "selected"
+=======
+>>>>>>> 452465a780b8d014f66bf276ff5efb2d9fa32e92
     # Optional repeated rigid-registration/template-refinement passes.
     registration_n_passes: int = 2
     # Optional second-pass inter-plane straightening of the averaged z volume.
