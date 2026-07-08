@@ -1,11 +1,11 @@
-"""Memory-safe Bruker/ScanImage structural volume averaging."""
+"""Memory-safe ScanImage structural volume averaging and z-plane registration."""
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Sequence
 
 import numpy as np
 import tifffile
@@ -15,19 +15,22 @@ from slap2_volume_align.readers.tiff import (
     read_tiff_stack_spec,
     write_volume_tiff,
 )
-from slap2_volume_align.sources.scanimage.metadata import ScanImageStackSpec
 from slap2_volume_align.qc.scanimage import make_volume_qc_png, write_shift_csv
 from slap2_volume_align.core.registration import (
     estimate_rigid_shift,
     make_template,
     mean_shifted_frames,
 )
-from slap2_volume_align.core.bidirectional import apply_bidirectional_phase
-from slap2_volume_align.core.straightening import (
-    apply_z_straightening,
-    estimate_z_straightening_shifts,
-    make_straightening_qc_png,
-    write_straightening_csv,
+from slap2_volume_align.core.bidirectional import (
+    apply_bidirectional_phase,
+    estimate_bidirectional_phase_stack,
+)
+from slap2_volume_align.core.z_registration import (
+    apply_z_registration,
+    estimate_crop_z_registration,
+    make_z_registration_qc_png,
+    parse_crop_list_yx,
+    write_z_registration_csv,
 )
 
 
@@ -56,24 +59,41 @@ class ScanImageAverageConfig:
     # Optional bidirectional odd/even line phase correction before registration.
     # bidiphase=0 disables this. Fractional phases are supported and often useful.
     bidiphase: float = 0.0
+    # "odd" or "even" for application. "auto" is accepted by the pipeline and
+    # resolved once from the first processed alignment plane using the configured
+    # bidiphase; the notebook estimator should still be preferred when possible.
     bidi_line_parity: str = "odd"
     bidi_fill_mode: str = "nearest"
-
-    # Optional repeated rigid-registration/template-refinement passes.
+    # ``selected`` shifts one row parity only; ``symmetric`` shifts both parities
+    # by half the requested relative phase and usually reduces sawtooth texture.
+    bidi_shift_mode: str = "selected"
+    # Optional repeated rigid-registration/template-refinement passes for repeats
+    # within the same z plane.
     registration_n_passes: int = 2
-    # Optional second-pass inter-plane straightening of the averaged z volume.
-    straighten_z: bool = False
+
+    # Optional crop-based inter-plane registration of the averaged z volume.
+    # This replaces the older global full-frame z-alignment path. Manual crops are
+    # recommended for production; if z_registration_crops_yx is None, bright
+    # auto-crops are inferred from the max projection.
+    register_z: bool = False
+    z_registration_crops_yx: Sequence[Sequence[int]] | str | None = None
     z_anchor: int | None = None
+    z_auto_n_crops: int = 1
+    z_auto_crop_size_px: int = 384
     z_template_radius: int = 2
     z_registration_binning: int = 4
-    z_upsample_factor: int = 10
-    z_max_step_shift_px: float = 12.0
-    z_highpass_sigma_px: float = 16.0
-    z_smooth_window: int = 9
+    z_max_shift_px: int = 20
+    z_highpass_sigma_px: float = 8.0
+    z_intensity_transform: str = "sqrt"
+    z_min_corr: float = 0.08
+    z_min_overlap_fraction: float = 0.25
+    z_min_accepted_crops: int = 1
+    z_smooth_window: int = 0
+    z_max_interpolation_gap: int = 1
 
 
 def average_scanimage_volume(config: ScanImageAverageConfig) -> dict:
-    """Align repeated frames per z-plane and average into one volume/channel.
+    """Align repeated frames per z-plane, average, and optionally register z planes.
 
     Returns a dictionary containing output paths and summary metadata.
     """
@@ -108,6 +128,8 @@ def average_scanimage_volume(config: ScanImageAverageConfig) -> dict:
         for c in range(spec.n_channels)
     }
     shift_rows: list[dict] = []
+    resolved_bidi_line_parity: str | None = None
+    bidi_auto_estimate: dict | None = None
 
     with tifffile.TiffFile(input_tif) as tif:
         for out_z, z_index in enumerate(z_indices):
@@ -119,12 +141,23 @@ def average_scanimage_volume(config: ScanImageAverageConfig) -> dict:
                 channel_index=config.alignment_channel,
                 spec=spec,
             )
+            bidi_apply_line_parity: str | None = None
             if float(config.bidiphase) != 0.0:
+                if resolved_bidi_line_parity is None:
+                    resolved_bidi_line_parity, bidi_auto_estimate = _resolve_bidi_line_parity(
+                        config, alignment_frames, z_index=z_index
+                    )
+                    if str(config.bidi_line_parity).lower() == "auto":
+                        print(
+                            "Resolved bidi_line_parity='auto' to "
+                            f"{resolved_bidi_line_parity!r} from z {z_index}."
+                        )
+                bidi_apply_line_parity = resolved_bidi_line_parity
                 alignment_frames = [
                     apply_bidirectional_phase(
                         frame,
                         config.bidiphase,
-                        line_parity=config.bidi_line_parity,
+                        line_parity=bidi_apply_line_parity,
                         fill_mode=config.bidi_fill_mode,
                         shift_mode=config.bidi_shift_mode,
                     )
@@ -193,8 +226,9 @@ def average_scanimage_volume(config: ScanImageAverageConfig) -> dict:
                         apply_bidirectional_phase(
                             frame,
                             config.bidiphase,
-                            line_parity=config.bidi_line_parity,
+                            line_parity=bidi_apply_line_parity,
                             fill_mode=config.bidi_fill_mode,
+                            shift_mode=config.bidi_shift_mode,
                         )
                         for frame in frames
                     ]
@@ -219,51 +253,69 @@ def average_scanimage_volume(config: ScanImageAverageConfig) -> dict:
         )
         output_paths[f"channel_{channel_index + 1}"] = str(out_path)
 
+    z_registered_output_paths: dict[str, str] = {}
+    z_registration_csv = None
+    z_registration_crop_csv = None
+    z_registration_rows: list[dict] = []
+    z_registration_crop_rows: list[dict] = []
+    z_registration_crops: list[tuple[int, int, int, int]] = []
 
-    straightened_output_paths: dict[str, str] = {}
-    if config.straighten_z:
-        straightening_rows = estimate_z_straightening_shifts(
+    if config.register_z:
+        crop_list = parse_crop_list_yx(config.z_registration_crops_yx, spec.image_shape)
+        z_registration_rows, z_registration_crop_rows, z_registration_crops = estimate_crop_z_registration(
             volumes[config.alignment_channel],
             z_indices=z_indices,
+            crops_yx=crop_list,
             anchor_z=config.z_anchor,
+            auto_n_crops=config.z_auto_n_crops,
+            auto_crop_size_px=config.z_auto_crop_size_px,
             template_radius=config.z_template_radius,
+            max_shift_px=config.z_max_shift_px,
             binning=config.z_registration_binning,
-            upsample_factor=config.z_upsample_factor,
-            max_step_shift_px=config.z_max_step_shift_px,
             highpass_sigma_px=config.z_highpass_sigma_px,
+            intensity_transform=config.z_intensity_transform,
+            min_corr=config.z_min_corr,
+            min_overlap_fraction=config.z_min_overlap_fraction,
+            min_accepted_crops=config.z_min_accepted_crops,
             smooth_window=config.z_smooth_window,
+            max_interpolation_gap=config.z_max_interpolation_gap,
             interpolation_order=config.interpolation_order,
         )
-        straightening_csv = out_dir / f"{stem}_z_straightening_shifts.csv"
-        write_straightening_csv(straightening_csv, straightening_rows)
+        z_registration_csv = out_dir / f"{stem}_z_registration_shifts.csv"
+        z_registration_crop_csv = out_dir / f"{stem}_z_registration_crop_shifts.csv"
+        write_z_registration_csv(z_registration_csv, z_registration_rows)
+        write_z_registration_csv(z_registration_crop_csv, z_registration_crop_rows)
 
         for channel_index, volume in sorted(volumes.items()):
-            straightened = apply_z_straightening(
+            z_registered = apply_z_registration(
                 volume,
-                straightening_rows,
-                use_smoothed=True,
+                z_registration_rows,
                 interpolation_order=config.interpolation_order,
             )
-            out_path = out_dir / f"{stem}_avg_ch{channel_index + 1}_straightened.tif"
+            out_path = out_dir / f"{stem}_avg_ch{channel_index + 1}_zregistered.tif"
             write_volume_tiff(
                 out_path,
-                straightened,
+                z_registered,
                 dtype=config.output_dtype,
                 compression=config.output_compression,
                 description=(
-                    f"Averaged and z-straightened ScanImage volume from {input_tif.name}; "
+                    f"Averaged and crop-based z-registered ScanImage volume from {input_tif.name}; "
                     f"channel={channel_index + 1}; axes=ZYX"
                 ),
             )
-            straightened_output_paths[f"channel_{channel_index + 1}"] = str(out_path)
-            volumes[channel_index] = straightened
+            z_registered_output_paths[f"channel_{channel_index + 1}"] = str(out_path)
+            volumes[channel_index] = z_registered
 
         if config.write_qc_png:
-            straight_qc_path = out_dir / f"{stem}_z_straightening_qc.png"
-            make_straightening_qc_png(straight_qc_path, straightening_rows)
-    else:
-        straightening_rows = []
-        straightening_csv = None
+            z_qc_path = out_dir / f"{stem}_z_registration_qc.png"
+            projection = np.nanmax(volumes[config.alignment_channel], axis=0)
+            make_z_registration_qc_png(
+                z_qc_path,
+                z_registration_rows,
+                z_registration_crop_rows,
+                z_registration_crops,
+                projection_image=projection,
+            )
 
     shifts_path = out_dir / f"{stem}_alignment_shifts.csv"
     write_shift_csv(shifts_path, shift_rows)
@@ -272,24 +324,79 @@ def average_scanimage_volume(config: ScanImageAverageConfig) -> dict:
         "config": _jsonify_dataclass(config),
         "stack_spec": spec.to_dict(),
         "z_indices": z_indices,
+        "resolved_bidi_line_parity": resolved_bidi_line_parity,
+        "bidi_auto_estimate": bidi_auto_estimate,
         "outputs": output_paths,
-        "straightened_outputs": straightened_output_paths,
+        "z_registered_outputs": z_registered_output_paths,
         "shifts_csv": str(shifts_path),
-        "z_straightening_csv": str(straightening_csv) if straightening_csv is not None else None,
+        "z_registration_csv": str(z_registration_csv) if z_registration_csv is not None else None,
+        "z_registration_crop_csv": str(z_registration_crop_csv) if z_registration_crop_csv is not None else None,
+        "z_registration_crops_yx": [list(c) for c in z_registration_crops],
     }
 
     if config.write_qc_png:
         qc_path = out_dir / f"{stem}_alignment_qc.png"
         make_volume_qc_png(qc_path, volumes)
         summary["qc_png"] = str(qc_path)
-        if config.straighten_z:
-            summary["z_straightening_qc_png"] = str(out_dir / f"{stem}_z_straightening_qc.png")
+        if config.register_z:
+            summary["z_registration_qc_png"] = str(out_dir / f"{stem}_z_registration_qc.png")
 
     summary_path = out_dir / f"{stem}_alignment_summary.json"
     summary["summary_json"] = str(summary_path)
     summary_path.write_text(json.dumps(summary, indent=2))
 
     return summary
+
+
+def _resolve_bidi_line_parity(
+    config: ScanImageAverageConfig,
+    alignment_frames: Iterable[np.ndarray],
+    *,
+    z_index: int,
+) -> tuple[str, dict | None]:
+    """Return an application-safe BiDi line parity.
+
+    ``apply_bidirectional_phase`` only accepts ``"odd"`` or ``"even"``. The
+    notebook uses ``"auto"`` as a pre-estimation sentinel, so the pipeline also
+    accepts ``"auto"`` and resolves it once from the first processed alignment
+    plane. This prevents a stale notebook state from reaching the low-level apply
+    function as an invalid parity.
+    """
+
+    parity = str(config.bidi_line_parity).lower()
+    if parity in ("odd", "even"):
+        return parity, None
+    if parity != "auto":
+        raise ValueError(
+            "bidi_line_parity must be 'odd', 'even', or 'auto', "
+            f"got {config.bidi_line_parity!r}"
+        )
+
+    frames = [np.asarray(frame) for frame in alignment_frames]
+    if not frames:
+        raise ValueError("Cannot resolve bidi_line_parity='auto' from an empty frame list")
+
+    # Preserve the user's configured phase and choose only which row parity should
+    # receive it. This is a safety fallback; the notebook's explicit estimator is
+    # still preferred because it can jointly estimate phase sign/magnitude/parity
+    # from hand-picked informative z planes.
+    estimate = estimate_bidirectional_phase_stack(
+        frames,
+        phase_candidates=[float(config.bidiphase)],
+        line_parity_candidates=("odd", "even"),
+        crop_yx=(128, 128),
+        x_stride=1,
+        highpass_sigma_px=config.highpass_sigma_px,
+        shift_mode=config.bidi_shift_mode,
+    )
+    resolved = str(estimate["best_line_parity"])
+    return resolved, {
+        "z_index": int(z_index),
+        "input_bidiphase": float(config.bidiphase),
+        "resolved_line_parity": resolved,
+        "best_median_score": float(estimate["best_median_score"]),
+        "aggregate_scores": estimate["aggregate_scores"],
+    }
 
 
 def _jsonify_dataclass(obj) -> dict:
